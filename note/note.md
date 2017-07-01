@@ -97,5 +97,168 @@ handleNewInstance方法所做的其实就是利用反射的方法构造了一个
 
 ![Connection](images/Connection.jpg)
 
+核心连接逻辑位于ConnectionImpl的构造器中，其核心逻辑(简略版源码)如下:
 
+```java
+public ConnectionImpl(...) {
+    initializeDriverProperties(info);
+    initializeSafeStatementInterceptors();
+    createNewIO(false);
+    unSafeStatementInterceptors();
+}
+```
 
+下面分部分对其进行说明。
+
+### 属性解析
+
+info是一个Properties对象，由jdbc连接url解析而来，Mysql的url允许我们进行参数的传递，对于我们普通的没有参数的url: jdbc:mysql://localhost:3306/test，解析得到的属性对象如下图:
+
+![URL属性](images/info.png)
+
+从上面类图中可以看出，ConnectionImpl其实是ConnectionPropertiesImpl的子类，而**ConnectionPropertiesImpl正是连接参数的载体**，所以initializeDriverProperties方法的目的可以总结如下:
+
+- 将我们通过URL传入的参数设置到ConnectionPropertiesImpl的相应Field中去，以待后续进行连接时使用。
+- 根据我们传入的以及默认的参数对相应的数据结构进行初始化。
+
+initializeDriverProperties首先调用了父类的initializeProperties方法，用以实现第一个目的，简略版源码:
+
+```java
+protected void initializeProperties(Properties info) throws SQLException {
+    if (info != null) {
+        Properties infoCopy = (Properties) info.clone();
+        int numPropertiesToSet = PROPERTY_LIST.size();
+         for (int i = 0; i < numPropertiesToSet; i++) {
+            java.lang.reflect.Field propertyField = PROPERTY_LIST.get(i);
+            ConnectionProperty propToSet = (ConnectionProperty) propertyField.get(this);
+            propToSet.initializeFrom(infoCopy, getExceptionInterceptor());
+         }
+    }
+}
+```
+
+ConnectionPropertiesImpl中的配置字段其实都是ConnectionProperty(定义在其内部)类型:
+
+![ConnectionProperty](images/ConnectionProperty.jpg)
+
+下面是这种属性的典型定义方式:
+
+```java
+private IntegerConnectionProperty loadBalanceAutoCommitStatementThreshold = new IntegerConnectionProperty
+    ("loadBalanceAutoCommitStatementThreshold", 0, 0,
+    Integer.MAX_VALUE, Messages.getString("ConnectionProperties.loadBalanceAutoCommitStatementThreshold"),
+     "5.1.15", MISC_CATEGORY, Integer.MIN_VALUE);
+```
+
+PROPERTY_LIST其实就是用反射的方法得到的ConnectionPropertiesImpl中所有ConnectionProperty类型Field集合，定义以及初始化源码如下:
+
+```java
+private static final ArrayList<Field> PROPERTY_LIST = new ArrayList<>();
+static {
+    java.lang.reflect.Field[] declaredFields = ConnectionPropertiesImpl.class.getDeclaredFields();
+    for (int i = 0; i < declaredFields.length; i++) {
+        if (ConnectionPropertiesImpl.ConnectionProperty.class.isAssignableFrom(declaredFields[i].getType())) {
+            PROPERTY_LIST.add(declaredFields[i]);
+        }
+    }
+}
+```
+
+initializeFromfan方法所做的正如其方法名，就是从属性对象中检测有没有和自己相匹配的设置项，如果有，那么更新为我们设置的值，否则使用默认值。
+
+ConnectionProperty.initializeFrom:
+
+```java
+void initializeFrom(Properties extractFrom, ExceptionInterceptor exceptionInterceptor) {
+    String extractedValue = extractFrom.getProperty(getPropertyName());
+    extractFrom.remove(getPropertyName());
+    initializeFrom(extractedValue, exceptionInterceptor);
+}
+```
+
+以StringConnectionProperty为例，接收(String, ExceptionInterceptor)参数的initializeFrom方法实现如下:
+
+```java
+@Override
+void initializeFrom(String extractedValue, ExceptionInterceptor exceptionInterceptor) {
+    if (extractedValue != null) {
+        validateStringValues(extractedValue, exceptionInterceptor);
+        this.valueAsObject = extractedValue;
+    } else {
+        //使用默认值
+        this.valueAsObject = this.defaultValue;
+    }
+    this.updateCount++;
+}
+```
+
+从上面类图中可以看到，ConnectionProperty中有一个allowableValues字段，对于StringConnectionProperty来说validateStringValues的逻辑很简单，就是依次遍历整个allowableValues数组，检查给定的设置值是否在允许的范围内，核心源码如下:
+
+```java
+for (int i = 0; i < validateAgainst.length; i++) {
+    if ((validateAgainst[i] != null) && validateAgainst[i].equalsIgnoreCase(valueToValidate)) {
+        //检查通过
+        return;
+    }
+}
+```
+
+### 异常拦截器
+
+initializeDriverProperties方法相关源码:
+
+```java
+String exceptionInterceptorClasses = getExceptionInterceptors();
+if (exceptionInterceptorClasses != null && !"".equals(exceptionInterceptorClasses)) {
+    this.exceptionInterceptor = new ExceptionInterceptorChain(exceptionInterceptorClasses);
+}
+```
+
+很容易想到，getExceptionInterceptors方法获取的其实是父类中定义的exceptionInterceptors属性:
+
+```java
+private StringConnectionProperty exceptionInterceptors = new StringConnectionProperty("exceptionInterceptors", null,
+    Messages.getString("ConnectionProperties.exceptionInterceptors"), "5.1.8", MISC_CATEGORY, Integer.MIN_VALUE);
+```
+
+也就是说我们可以通过给URL传入exceptionInterceptors参数以定义我们自己的异常处理器，并且是从Mysql 5.1.8版本才开始支持，这其实为我们留下了一个扩展点: 可以不修改业务代码从而对Mysql驱动的运行状态进行监控。只找到了下面一篇简单的介绍文章:
+
+[Connector/J extension points – exception interceptors](http://mysqlblog.fivefarmers.com/2011/11/21/connectorj-extension-points-%E2%80%93-exception-interceptors/)
+
+所有的异常拦截器必须实现ExceptionInterceptor接口，这里要吐槽一下，这个接口竟然一行注释也没有！
+
+![ExceptionInterceptor](images/ExceptionInterceptor.jpg)
+
+ExceptionInterceptorChain其实是装饰模式的体现，内部有一个拦截器列表:
+
+```java
+List<Extension> interceptors;
+```
+
+其interceptException方法便是遍历此列表依次调用所有拦截器的interceptException方法。
+
+#### 初始化
+
+由ExceptionInterceptorChain的构造器调用Util.loadExtensions方法完成:
+
+```java
+public static List<Extension> loadExtensions(Connection conn, Properties props, String extensionClassNames, String errorMessageKey,
+            ExceptionInterceptor exceptionInterceptor) {
+    List<Extension> extensionList = new LinkedList<Extension>();
+    List<String> interceptorsToCreate = StringUtils.split(extensionClassNames, ",", true);
+    String className = null;
+    for (int i = 0, s = interceptorsToCreate.size(); i < s; i++) {
+        className = interceptorsToCreate.get(i);
+        Extension extensionInstance = (Extension) Class.forName(className).newInstance();
+        extensionInstance.init(conn, props);
+        extensionList.add(extensionInstance);
+    }
+    return extensionList;
+}
+```
+
+从这里可以看出两点:
+
+- exceptionInterceptors参数可以同时指定多个拦截器，之间以逗号分隔。
+- 拦截器指定时必须用完整的类名。
+- 按照我们传入的参数的顺序进行调用。
