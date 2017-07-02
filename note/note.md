@@ -257,8 +257,109 @@ public static List<Extension> loadExtensions(Connection conn, Properties props, 
 }
 ```
 
-从这里可以看出两点:
+从这里可以看出以下几点:
 
 - exceptionInterceptors参数可以同时指定多个拦截器，之间以逗号分隔。
 - 拦截器指定时必须用完整的类名。
 - 按照我们传入的参数的顺序进行调用。
+
+### 国际化
+
+从上面配置项的定义可以看出，Mysql使用了Messages类对消息进行了处理，这里Messages其实是对jdk国际化支持ResourceBundle的一层包装，下面是其简略版源码:
+
+```java
+public class Messages {
+    private static final String BUNDLE_NAME = "com.mysql.jdbc.LocalizedErrorMessages";
+    private static final ResourceBundle RESOURCE_BUNDLE;
+    public static String getString(String key) {
+        return RESOURCE_BUNDLE.getString(key);
+    }
+}
+```
+
+这里省略了资源加载的过程，什么是国际化，问度娘就好了。
+
+### 日志记录
+
+对应initializeDriverProperties方法的下列源码:
+
+```java
+if (getProfileSql() || getUseUsageAdvisor()) {
+    this.eventSink = ProfilerEventHandlerFactory.getInstance(getMultiHostSafeProxy());
+}
+```
+
+getProfileSql方法对应URL的profileSQL参数，getUseUsageAdvisor对应useUsageAdvisor参数，两个参数默认为false，即关闭，profileSQL如果打开，那么Mysql将会把sql执行的相应日志记录下来，用于性能分析，参见:
+
+[Enabling MySQL general query log with JDBC](https://stackoverflow.com/questions/10903206/enabling-mysql-general-query-log-with-jdbc)
+
+useUsageAdvisor参数用以记录Mysql认为性能不高的查询操作。
+
+eventSink是一个ProfilerEventHandler对象:
+
+![ProfilerEventHandler](images/ProfilerEventHandler.jpg)
+
+getMultiHostSafeProxy方法用于在负载均衡的情况下获得代理对象，如果使用了负载均衡，那么必定有多台真实的Mysql物理机，所以在这种情况下连接就变成一个逻辑上的概念。
+
+下面看一下ProfilerEventHandlerFactory.getInstance的实现:
+
+```java
+public static synchronized ProfilerEventHandler getInstance(MySQLConnection conn) throws SQLException {
+    //这里获取的就是ConnectionImpl内部的eventSink，第一次当然为null
+    ProfilerEventHandler handler = conn.getProfilerEventHandlerInstance();
+    if (handler == null) {
+        handler = (ProfilerEventHandler) Util.getInstance(conn.getProfilerEventHandler(),
+            new Class[0], new Object[0], conn.getExceptionInterceptor());
+        conn.initializeExtension(handler);
+        conn.setProfilerEventHandlerInstance(handler);
+    }
+    return handler;
+}
+```
+
+Util.getInstance方法根据传入的完整类名用反射的方式初始化一个对象并返回，完整类名便是conn.getProfilerEventHandler()方法获得的在ConnectionPropertiesImpl中定义的profilerEventHandler参数，默认值便是com.mysql.jdbc.profiler.LoggingProfilerEventHandler，不过从这里我们也可以看出，Mysql为我们留下了扩展的机会。
+
+LoggingProfilerEventHandler的实现非常简单:
+
+```java
+public class LoggingProfilerEventHandler implements ProfilerEventHandler {
+    private Log log;
+    public void consumeEvent(ProfilerEvent evt) {
+        if (evt.eventType == ProfilerEvent.TYPE_WARN) {
+            this.log.logWarn(evt);
+        } else {
+            this.log.logInfo(evt);
+        }
+    }
+    public void destroy() {
+        this.log = null;
+    }
+    //被上面的initializeExtension方法调用
+    public void init(Connection conn, Properties props) throws SQLException {
+        this.log = conn.getLog();
+    }
+}
+```
+
+#### ProfilerEvent
+
+![ProfilerEvent](images/ProfilerEvent.jpg)
+
+推测: 此类必定是检测事件对象的序列化与反序列化的载体。
+
+### 预编译缓存
+
+所谓的"预编译"指的便是jdbc标准里面的PreparedStatement：
+
+![PreparedStatement](images/PreparedStatement.jpg)
+
+注意，Statement和PreparedStatement的类图并未画全，否则实在是太长了。:cry:
+
+Statement在jdbc里代表的便是一条sql语句的执行，而这里的编译指的是什么将在后面提到。参数cachePrepStmts 如果设为true，那么jdbc便会将编译之后得到的PreparedStatement对象缓存起来，**当在一个连接内**多次针对同一条sql语句调用`connection.prepareStatement(sql)`方法时返回的实际上是一个PreparedStatement对象。这在数据库连接池中非常有用，默认是关闭的。
+
+### 服务端编译
+
+默认Mysql的jdbc编译是在客户端完成的，我们可以通过参数useServerPrepStmts 将其改为在服务器端编译，不过Mysql官方建议应该非常谨慎(不要)修改这个参数，这两部分内容可以参考:
+
+[What's the difference between cachePrepStmts and useServerPrepStmts in MySQL JDBC Driver](https://stackoverflow.com/questions/32286518/whats-the-difference-between-cacheprepstmts-and-useserverprepstmts-in-mysql-jdb)
+

@@ -18,7 +18,7 @@ public class Client {
     @Before
     public void init() throws ClassNotFoundException, SQLException {
         Class.forName("com.mysql.jdbc.Driver");
-        connection = DriverManager.getConnection("jdbc:mysql://localhost:3306/test", "root", "1234");
+        connection = DriverManager.getConnection("jdbc:mysql://localhost:3306/test?useUsageAdvisor=true", "root", "1234");
     }
 
     @Test
