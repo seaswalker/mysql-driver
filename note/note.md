@@ -357,9 +357,89 @@ public class LoggingProfilerEventHandler implements ProfilerEventHandler {
 
 Statement在jdbc里代表的便是一条sql语句的执行，而这里的编译指的是什么将在后面提到。参数cachePrepStmts 如果设为true，那么jdbc便会将编译之后得到的PreparedStatement对象缓存起来，**当在一个连接内**多次针对同一条sql语句调用`connection.prepareStatement(sql)`方法时返回的实际上是一个PreparedStatement对象。这在数据库连接池中非常有用，默认是关闭的。
 
+预编译的好处共有两点:
+
+- 减轻Mysql服务的负担，这不废话么。
+- **抵御SQL注入攻击**，
+
+如果我们开启了此参数，那么Mysql jdbc将为其建立相应的缓存数据结构，initializeDriverProperties方法相应源码:
+
+```java
+if (getCachePreparedStatements()) {
+    createPreparedStatementCaches();
+}
+```
+
+createPreparedStatementCaches简略版源码:
+
+```java
+private void createPreparedStatementCaches() throws SQLException {
+    synchronized (getConnectionMutex()) {
+        //默认25
+        int cacheSize = getPreparedStatementCacheSize();
+        //1.
+        Class<?> factoryClass = Class.forName(getParseInfoCacheFactory());
+        CacheAdapterFactory<String, ParseInfo> cacheFactory = ((CacheAdapterFactory<String, ParseInfo>) factoryClass.newInstance());
+        this.cachedPreparedStatementParams = cacheFactory.getInstance(this, this.myURL, getPreparedStatementCacheSize(),
+                getPreparedStatementCacheSqlLimit(), this.props);
+        //2.
+        if (getUseServerPreparedStmts()) {
+            this.serverSideStatementCheckCache = new LRUCache(cacheSize);
+            this.serverSideStatementCache = new LRUCache(cacheSize) {
+                private static final long serialVersionUID = 7692318650375988114L;
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<Object, Object> eldest) {
+                    if (this.maxElements <= 1) {
+                        return false;
+                    }
+                    boolean removeIt = super.removeEldestEntry(eldest);
+                    if (removeIt) {
+                        ServerPreparedStatement ps = (ServerPreparedStatement) eldest.getValue();
+                        ps.isCached = false;
+                        ps.setClosed(false);
+
+                        try {
+                            ps.close();
+                        } catch (SQLException sqlEx) {
+                            // punt
+                        }
+                    }
+                    return removeIt;
+                }
+            };
+        }
+    }
+}
+```
+
+整个方法的逻辑明显可以分为2部分，第一部分的效果就是创建了一个cachedPreparedStatementParams并保存在ConnectionImpl内部，定义如下:
+
+```java
+/** A cache of SQL to parsed prepared statement parameters. */
+private CacheAdapter<String, ParseInfo> cachedPreparedStatementParams;
+```
+
+factoryClass默认为PerConnectionLRUFactory:
+
+![PerConnectionLRUFactory](images/PerConnectionLRUFactory.jpg)
+
+为什么缓存接口名为CacheAdapter呢?
+
+Mysql允许我们使用不同的CacheAdapterFactory实现，可以通过参数parseInfoCacheFactory传入，加入我们想用Guava cache代替默认的缓存实现，那么我们只需要编写一个类并实现CacheAdapter接口，内部委托给Guava cache，这不就相当于一个Adapter吗，猜的好有道理的样子，逃:)...
+
+PerConnectionLRU内部完全委托给LRUCache实现:
+
+![LRUCache](images/LRUCache.jpg)
+
+:haha:.
+
 ### 服务端编译
 
 默认Mysql的jdbc编译是在客户端完成的，我们可以通过参数useServerPrepStmts 将其改为在服务器端编译，不过Mysql官方建议应该非常谨慎(不要)修改这个参数，这两部分内容可以参考:
 
 [What's the difference between cachePrepStmts and useServerPrepStmts in MySQL JDBC Driver](https://stackoverflow.com/questions/32286518/whats-the-difference-between-cacheprepstmts-and-useserverprepstmts-in-mysql-jdb)
+
+### 存储过程缓存
+
+jdbc标准里CallableStatement负责对存储过程的调用执行，而cacheCallableStmts参数正是用于开启对存储过程
 
