@@ -1,5 +1,3 @@
-# 连接
-
 我们仍以常用的方式建立数据库连接，如下代码所示:
 
 ```java
@@ -11,7 +9,7 @@ public void init() throws ClassNotFoundException, SQLException {
 }
 ```
 
-## 驱动注册
+# 驱动注册
 
 当mysql驱动类被加载时，会向java.sql.DriverManager进行注册，Driver静态初始化源码:
 
@@ -63,8 +61,6 @@ public java.sql.Connection connect(String url, Properties info) {
 }
 ```
 
-## 建立
-
 从源码中可以看出，系统针对URL的不同采用了不同的连接策略，对于以jdbc:mysql:loadbalance://开头的URL，便以Master/Slave的架构进行连接，对于以jdbc:mysql:replication://开头的URL便按照双主的架构进行连接，如果就是我们使用的普通的URL，那么检测URL中节点的数量，如果大于1，那么使用failOver的方式，最后才是我们的测试代码中单节点的连接方式。
 
 关于以上提到的Mysql两种集群模式，可以参考:
@@ -110,7 +106,7 @@ public ConnectionImpl(...) {
 
 下面分部分对其进行说明。
 
-### 属性解析
+# 属性解析
 
 info是一个Properties对象，由jdbc连接url解析而来，Mysql的url允许我们进行参数的传递，对于我们普通的没有参数的url: jdbc:mysql://localhost:3306/test，解析得到的属性对象如下图:
 
@@ -203,7 +199,7 @@ for (int i = 0; i < validateAgainst.length; i++) {
 }
 ```
 
-### 异常拦截器
+# 异常拦截器
 
 initializeDriverProperties方法相关源码:
 
@@ -237,7 +233,7 @@ List<Extension> interceptors;
 
 其interceptException方法便是遍历此列表依次调用所有拦截器的interceptException方法。
 
-#### 初始化
+## 初始化
 
 由ExceptionInterceptorChain的构造器调用Util.loadExtensions方法完成:
 
@@ -263,7 +259,7 @@ public static List<Extension> loadExtensions(Connection conn, Properties props, 
 - 拦截器指定时必须用完整的类名。
 - 按照我们传入的参数的顺序进行调用。
 
-### 国际化
+# 国际化
 
 从上面配置项的定义可以看出，Mysql使用了Messages类对消息进行了处理，这里Messages其实是对jdk国际化支持ResourceBundle的一层包装，下面是其简略版源码:
 
@@ -279,7 +275,7 @@ public class Messages {
 
 这里省略了资源加载的过程，什么是国际化，问度娘就好了。
 
-### 日志记录
+# 日志记录
 
 对应initializeDriverProperties方法的下列源码:
 
@@ -341,13 +337,13 @@ public class LoggingProfilerEventHandler implements ProfilerEventHandler {
 }
 ```
 
-#### ProfilerEvent
+## ProfilerEvent
 
 ![ProfilerEvent](images/ProfilerEvent.jpg)
 
 推测: 此类必定是检测事件对象的序列化与反序列化的载体。
 
-### 预编译缓存
+# 预编译缓存
 
 所谓的"预编译"指的便是jdbc标准里面的PreparedStatement：
 
@@ -431,15 +427,156 @@ PerConnectionLRU内部完全委托给LRUCache实现:
 
 ![LRUCache](images/LRUCache.jpg)
 
-:haha:.
+:haha:
 
-### 服务端编译
+# 服务端编译
 
 默认Mysql的jdbc编译是在客户端完成的，我们可以通过参数useServerPrepStmts 将其改为在服务器端编译，不过Mysql官方建议应该非常谨慎(不要)修改这个参数，这两部分内容可以参考:
 
 [What's the difference between cachePrepStmts and useServerPrepStmts in MySQL JDBC Driver](https://stackoverflow.com/questions/32286518/whats-the-difference-between-cacheprepstmts-and-useserverprepstmts-in-mysql-jdb)
 
-### 存储过程缓存
+# 存储过程缓存
 
-jdbc标准里CallableStatement负责对存储过程的调用执行，而cacheCallableStmts参数正是用于开启对存储过程
+jdbc标准里CallableStatement负责对存储过程的调用执行，而cacheCallableStmts参数正是用于开启对存储过程调用的缓存，initializeDriverProperties方法相关源码:
+
+```java
+if (getCacheCallableStatements()) {
+	this.parsedCallableStatementCache = new LRUCache(getCallableStatementCacheSize());
+}
+```
+
+# 元数据缓存
+
+众所周知我们在进行select操作时，jdbc将返回ResultSet对象作为结果集，调用其getMetaData方法可以获得一个ResultSetMetaData对象，这就代表了结果集的元数据信息:
+
+![ResultSetMetaData](images/ResultSetMetaData.jpg)
+
+从中我们可以获得列数，列的相关信息等。initializeDriverProperties方法相关源码:
+
+```java
+if (getCacheResultSetMetadata()) {
+	this.resultSetMetadataCache = new LRUCache(getMetadataCacheSize());
+}
+```
+
+关于此属性可进一步参考:
+
+[What metadata is cached when using cacheResultSetMetadata=true with MySQL JDBC connector?](https://stackoverflow.com/questions/23817312/what-metadata-is-cached-when-using-cacheresultsetmetadata-true-with-mysql-jdbc-c)
+
+# 批量查询
+
+如果我们开启了allowMultiQueries参数，那么便可以这样写SQL语句交给Mysql执行:
+
+```sql
+select * from student;select name from student;
+```
+
+一次写多条，中间以分号分割。
+
+不过在目前的Mysql驱动实现中，此选项和元数据缓存是冲突的，即如果开启了此选项，元数据缓存将会被禁用，即使cacheResultSetMetadata设为true:
+
+```java
+if (getAllowMultiQueries()) {
+	setCacheResultSetMetadata(false); // we don't handle this yet
+}
+```
+
+# StatementInterceptor
+
+Mysql驱动允许我们通过参数statementInterceptors指定一组StatementInterceptor:
+
+![StatementInterceptor](images/StatementInterceptor.jpg)
+
+就像Netty、Tomcat一样，这里又是链式调用的实现，preProcess和postProcess方法会在每个语句执行的前后分别被调用。 initializeSafeStatementInterceptors方法会检测并初始化我们指定的拦截器:
+
+```java
+public void initializeSafeStatementInterceptors() throws SQLException {
+	this.isClosed = false;
+  	//反射初始化
+	List<Extension> unwrappedInterceptors = Util.loadExtensions(this, this.props, getStatementInterceptors(), , );
+	this.statementInterceptors = new ArrayList<StatementInterceptorV2>(unwrappedInterceptors.size());
+	for (int i = 0; i < unwrappedInterceptors.size(); i++) {
+		Extension interceptor = unwrappedInterceptors.get(i);
+		if (interceptor instanceof StatementInterceptor) {
+			if (ReflectiveStatementInterceptorAdapter.getV2PostProcessMethod(interceptor.getClass()) != null) {
+				this.statementInterceptors.add(
+                  	new NoSubInterceptorWrapper(new ReflectiveStatementInterceptorAdapter((StatementInterceptor) interceptor)));
+			} else {
+				this.statementInterceptors.add(
+                  	new NoSubInterceptorWrapper(new V1toV2StatementInterceptorAdapter((StatementInterceptor) interceptor)));
+			}
+		} else {
+			this.statementInterceptors.add(new NoSubInterceptorWrapper((StatementInterceptorV2) interceptor));
+		}
+	}
+}
+```
+
+从源码中可以看出两点:
+
+- StatementInterceptorV2接口应该是StatementInterceptor的新(替代)版本，源码中使用Adapter将老版本适配为新版本。
+
+- NoSubInterceptorWrapper相当于一个装饰器，我们来看一下其preProcess方法的实现便知其目的:
+
+  ```java
+  public ResultSetInternalMethods preProcess(String sql, Statement interceptedStatement, Connection connection) {
+  	this.underlyingInterceptor.preProcess(sql, interceptedStatement, connection);
+  	return null; // don't allow result set substitution
+  }
+  ```
+
+  underlyingInterceptor为被装饰者，根据StatementInterceptor(V2)语义，如果preProcess或postProcess方法的返回值非空，那么驱动便会将此值作为结果集返回给调用者，而不是真正的数据库查询结果。所以包装为NoSubInterceptorWrapper的目的便是**在驱动启动(初始化)时禁用这一特性**。
+
+# 连接
+
+ConnectionImpl.createNewIO:
+
+```java
+public void createNewIO(boolean isForReconnect) throws SQLException {
+	synchronized (getConnectionMutex()) {
+		Properties mergedProps = exposeAsProperties(this.props);
+		if (!getHighAvailability()) {
+			connectOneTryOnly(isForReconnect, mergedProps);
+			return;
+		}
+		connectWithRetries(isForReconnect, mergedProps);
+	}
+}
+```
+
+源码说的"HighAvailability"是啥？
+
+```java
+protected boolean getHighAvailability() {
+	return this.highAvailabilityAsBoolean;
+}
+```
+
+highAvailabilityAsBoolean在ConnectionPropertiesImpl.postInitialization方法中被设置:
+
+```java
+this.highAvailabilityAsBoolean = this.autoReconnect.getValueAsBoolean();
+```
+
+其实就是一个自动重连而已，默认为false。:joy:
+
+connectOneTryOnly简略版源码:
+
+```java
+private void connectOneTryOnly(boolean isForReconnect, Properties mergedProps){
+	Exception connectionNotEstablishedBecause = null;
+	coreConnect(mergedProps);
+	this.connectionId = this.io.getThreadId();
+	this.isClosed = false;
+	// save state from old connection
+	boolean oldAutoCommit = getAutoCommit();
+	int oldIsolationLevel = this.isolationLevel;
+	boolean oldReadOnly = isReadOnly(false);
+	String oldCatalog = getCatalog();
+	this.io.setStatementInterceptors(this.statementInterceptors);
+	// Server properties might be different from previous connection, so initialize again...
+	initializePropsFromServer();
+	return;
+}
+```
 
