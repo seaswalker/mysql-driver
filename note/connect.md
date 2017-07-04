@@ -427,7 +427,7 @@ PerConnectionLRU内部完全委托给LRUCache实现:
 
 ![LRUCache](images/LRUCache.jpg)
 
-:haha:
+:haha
 
 # 服务端编译
 
@@ -441,7 +441,7 @@ jdbc标准里CallableStatement负责对存储过程的调用执行，而cacheCal
 
 ```java
 if (getCacheCallableStatements()) {
-	this.parsedCallableStatementCache = new LRUCache(getCallableStatementCacheSize());
+    this.parsedCallableStatementCache = new LRUCache(getCallableStatementCacheSize());
 }
 ```
 
@@ -455,7 +455,7 @@ if (getCacheCallableStatements()) {
 
 ```java
 if (getCacheResultSetMetadata()) {
-	this.resultSetMetadataCache = new LRUCache(getMetadataCacheSize());
+    this.resultSetMetadataCache = new LRUCache(getMetadataCacheSize());
 }
 ```
 
@@ -477,7 +477,7 @@ select * from student;select name from student;
 
 ```java
 if (getAllowMultiQueries()) {
-	setCacheResultSetMetadata(false); // we don't handle this yet
+    setCacheResultSetMetadata(false); // we don't handle this yet
 }
 ```
 
@@ -491,24 +491,24 @@ Mysql驱动允许我们通过参数statementInterceptors指定一组StatementInt
 
 ```java
 public void initializeSafeStatementInterceptors() throws SQLException {
-	this.isClosed = false;
-  	//反射初始化
-	List<Extension> unwrappedInterceptors = Util.loadExtensions(this, this.props, getStatementInterceptors(), , );
-	this.statementInterceptors = new ArrayList<StatementInterceptorV2>(unwrappedInterceptors.size());
-	for (int i = 0; i < unwrappedInterceptors.size(); i++) {
-		Extension interceptor = unwrappedInterceptors.get(i);
-		if (interceptor instanceof StatementInterceptor) {
-			if (ReflectiveStatementInterceptorAdapter.getV2PostProcessMethod(interceptor.getClass()) != null) {
-				this.statementInterceptors.add(
-                  	new NoSubInterceptorWrapper(new ReflectiveStatementInterceptorAdapter((StatementInterceptor) interceptor)));
-			} else {
-				this.statementInterceptors.add(
-                  	new NoSubInterceptorWrapper(new V1toV2StatementInterceptorAdapter((StatementInterceptor) interceptor)));
-			}
-		} else {
-			this.statementInterceptors.add(new NoSubInterceptorWrapper((StatementInterceptorV2) interceptor));
-		}
-	}
+    this.isClosed = false;
+    //反射初始化
+    List<Extension> unwrappedInterceptors = Util.loadExtensions(this, this.props, getStatementInterceptors(), , );
+    this.statementInterceptors = new ArrayList<StatementInterceptorV2>(unwrappedInterceptors.size());
+    for (int i = 0; i < unwrappedInterceptors.size(); i++) {
+        Extension interceptor = unwrappedInterceptors.get(i);
+        if (interceptor instanceof StatementInterceptor) {
+            if (ReflectiveStatementInterceptorAdapter.getV2PostProcessMethod(interceptor.getClass()) != null) {
+                this.statementInterceptors.add(
+                    new NoSubInterceptorWrapper(new ReflectiveStatementInterceptorAdapter((StatementInterceptor) interceptor)));
+            } else {
+                this.statementInterceptors.add(
+                    new NoSubInterceptorWrapper(new V1toV2StatementInterceptorAdapter((StatementInterceptor) interceptor)));
+            }
+        } else {
+            this.statementInterceptors.add(new NoSubInterceptorWrapper((StatementInterceptorV2) interceptor));
+        }
+    }
 }
 ```
 
@@ -520,8 +520,8 @@ public void initializeSafeStatementInterceptors() throws SQLException {
 
   ```java
   public ResultSetInternalMethods preProcess(String sql, Statement interceptedStatement, Connection connection) {
-  	this.underlyingInterceptor.preProcess(sql, interceptedStatement, connection);
-  	return null; // don't allow result set substitution
+    this.underlyingInterceptor.preProcess(sql, interceptedStatement, connection);
+    return null; // don't allow result set substitution
   }
   ```
 
@@ -533,14 +533,14 @@ ConnectionImpl.createNewIO:
 
 ```java
 public void createNewIO(boolean isForReconnect) throws SQLException {
-	synchronized (getConnectionMutex()) {
-		Properties mergedProps = exposeAsProperties(this.props);
-		if (!getHighAvailability()) {
-			connectOneTryOnly(isForReconnect, mergedProps);
-			return;
-		}
-		connectWithRetries(isForReconnect, mergedProps);
-	}
+    synchronized (getConnectionMutex()) {
+        Properties mergedProps = exposeAsProperties(this.props);
+        if (!getHighAvailability()) {
+            connectOneTryOnly(isForReconnect, mergedProps);
+            return;
+        }
+        connectWithRetries(isForReconnect, mergedProps);
+    }
 }
 ```
 
@@ -548,7 +548,7 @@ public void createNewIO(boolean isForReconnect) throws SQLException {
 
 ```java
 protected boolean getHighAvailability() {
-	return this.highAvailabilityAsBoolean;
+    return this.highAvailabilityAsBoolean;
 }
 ```
 
@@ -564,19 +564,19 @@ connectOneTryOnly简略版源码:
 
 ```java
 private void connectOneTryOnly(boolean isForReconnect, Properties mergedProps){
-	Exception connectionNotEstablishedBecause = null;
-	coreConnect(mergedProps);
-	this.connectionId = this.io.getThreadId();
-	this.isClosed = false;
-	// save state from old connection
-	boolean oldAutoCommit = getAutoCommit();
-	int oldIsolationLevel = this.isolationLevel;
-	boolean oldReadOnly = isReadOnly(false);
-	String oldCatalog = getCatalog();
-	this.io.setStatementInterceptors(this.statementInterceptors);
-	// Server properties might be different from previous connection, so initialize again...
-	initializePropsFromServer();
-	return;
+    Exception connectionNotEstablishedBecause = null;
+    coreConnect(mergedProps);
+    this.connectionId = this.io.getThreadId();
+    this.isClosed = false;
+    // save state from old connection
+    boolean oldAutoCommit = getAutoCommit();
+    int oldIsolationLevel = this.isolationLevel;
+    boolean oldReadOnly = isReadOnly(false);
+    String oldCatalog = getCatalog();
+    this.io.setStatementInterceptors(this.statementInterceptors);
+    // Server properties might be different from previous connection, so initialize again...
+    initializePropsFromServer();
+    return;
 }
 ```
 
