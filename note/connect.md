@@ -427,8 +427,6 @@ PerConnectionLRU内部完全委托给LRUCache实现:
 
 ![LRUCache](images/LRUCache.jpg)
 
-:haha
-
 # 服务端编译
 
 默认Mysql的jdbc编译是在客户端完成的，我们可以通过参数useServerPrepStmts 将其改为在服务器端编译，不过Mysql官方建议应该非常谨慎(不要)修改这个参数，这两部分内容可以参考:
@@ -558,25 +556,105 @@ highAvailabilityAsBoolean在ConnectionPropertiesImpl.postInitialization方法中
 this.highAvailabilityAsBoolean = this.autoReconnect.getValueAsBoolean();
 ```
 
-其实就是一个自动重连而已，默认为false。:joy:
+其实就是一个自动重连而已，默认为false。:joy_cat:
 
 connectOneTryOnly简略版源码:
 
 ```java
 private void connectOneTryOnly(boolean isForReconnect, Properties mergedProps){
-    Exception connectionNotEstablishedBecause = null;
     coreConnect(mergedProps);
     this.connectionId = this.io.getThreadId();
     this.isClosed = false;
-    // save state from old connection
-    boolean oldAutoCommit = getAutoCommit();
-    int oldIsolationLevel = this.isolationLevel;
-    boolean oldReadOnly = isReadOnly(false);
-    String oldCatalog = getCatalog();
     this.io.setStatementInterceptors(this.statementInterceptors);
     // Server properties might be different from previous connection, so initialize again...
     initializePropsFromServer();
     return;
 }
 ```
+
+coreConnect方法简略版源码:
+
+```java
+private void coreConnect(Properties mergedProps) {
+    this.io = new MysqlIO(newHost, newPort, mergedProps, getSocketFactoryClassName(), getProxy(), getSocketTimeout(),
+        this.largeRowSizeThreshold.getValueAsInt());
+    this.io.doHandshake(this.user, this.password, this.database);
+    if (versionMeetsMinimum(5, 5, 0)) {
+        // error messages are returned according to character_set_results which, at this point, is set from the response packet
+        this.errorMessageEncoding = this.io.getEncodingForHandshake();
+    }
+}
+```
+
+MysqlIO类用于驱动与服务器的交互，其构造器源码精简如下:
+
+```java
+public MysqlIO(String host, int port, Properties props, String socketFactoryClassName, MySQLConnection conn, int socketTimeout,
+            int useBufferRowSizeThreshold) {
+    this.socketFactory = createSocketFactory();
+    this.mysqlConnection = this.socketFactory.connect(this.host, this.port, props);
+    if (socketTimeout != 0) {
+        try {
+            this.mysqlConnection.setSoTimeout(socketTimeout);
+        } catch (Exception ex) {
+            /* Ignore if the platform does not support it */
+        }
+    }
+    //意义不大，跳过
+    this.mysqlConnection = this.socketFactory.beforeHandshake();
+    //input
+    if (this.connection.getUseReadAheadInput()) {
+        this.mysqlInput = new ReadAheadInputStream(this.mysqlConnection.getInputStream(), 16384, this.connection.getTraceProtocol(),
+                this.connection.getLog());
+    } else if (this.connection.useUnbufferedInput()) {
+        this.mysqlInput = this.mysqlConnection.getInputStream();
+    } else {
+        this.mysqlInput = new BufferedInputStream(this.mysqlConnection.getInputStream(), 16384);
+    }
+    this.mysqlOutput = new BufferedOutputStream(this.mysqlConnection.getOutputStream(), 16384);
+}
+```
+
+## SocketFactory
+
+驱动使用SocketFactory接口完成Socket的创建与连接，这里仍然是策略模式的体现，默认实现是com.mysql.jdbc.StandardSocketFactory.
+
+![SocketFactory](images/SocketFactory.jpg)
+
+StandardSocketFactory的connect方法实现其实就是创建Socket并连接到给定的地址，但是有一个细节值得注意:
+
+```java
+InetAddress[] possibleAddresses = InetAddress.getAllByName(this.host);
+for (int i = 0; i < possibleAddresses.length; i++) {
+    this.rawSocket = createSocket(props);
+    configureSocket(this.rawSocket, props);
+    InetSocketAddress sockAddr = new InetSocketAddress(possibleAddresses[i], this.port);
+    this.rawSocket.connect(sockAddr, getRealTimeout(connectTimeout));
+    break;
+}
+```
+
+InetAddress.getAllByName方法将会返回给定的hostname的所有的IP地址，比如如果hostname是localhost，那么返回的结果是:
+
+[localhost/127.0.0.1, localhost/0:0:0:0:0:0:0:1]
+
+一个是IPV4地址，另一个是IPV6地址。如果hostname为www.baidu.com:
+
+[www.baidu.com/119.75.213.61, www.baidu.com/119.75.216.20]
+
+原理其实就是DNS查找，Mysql驱动将会遍历IP数组，只要有一个IP连接成功即结束遍历。
+
+## 输入流
+
+MysqlIO构造器源码input标记处决定了驱动使用何种输入流。有三种选项:
+
+- Mysql的ReadAheadInputStream，useReadAheadInput参数控制，默认true.
+- jdk BufferedInputStream.
+- 最原始的输入流，即SocketInputsream.
+
+在这里重点关注ReadAheadInputStream和BufferedInputStream的区别以及它的好处到底在哪里。类图:
+
+![ReadAheadInputStream](images/ReadAheadInputStream.jpg)
+
+
 
