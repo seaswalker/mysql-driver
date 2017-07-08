@@ -656,5 +656,48 @@ MysqlIO构造器源码input标记处决定了驱动使用何种输入流。有�
 
 ![ReadAheadInputStream](images/ReadAheadInputStream.jpg)
 
+通过对两个类源码的详细阅读以及对比，得出结论: **ReadAheadInputStream就是去掉了mark(), reset()方法支持的BufferedInputStream**,其它的核心逻辑的实现完全一样，markSupported方法源码:
 
+```java
+@Override
+public boolean markSupported() {
+    return false;
+}
+```
+
+## 输出流
+
+就是原生BufferedOutputStream，没什么好说的。
+
+## 握手
+
+握手所做的可以概括为以下两个方面:
+
+- 接收Mysql服务器发送而来的版本等信息，客户端(jdbc)根据这些信息判断驱动和服务器的版本是否可以相互支持，以及决定哪些特性可以使用。
+- 向服务器发送用户名密码等认证信息完成登录。
+
+相应的源码实现需要根据各个版本信息进行复杂的条件判断，这里不再贴出。整个交互的流程可如下图进行表示:
+
+![交互](images/interactive.png)
+
+Mysql底层在进行消息的发送与接收时，使用的是类似于TLV的结构，不过这里没有T，只有L和V，以服务端信息阶段为例，服务器发送过来的消息的格式大体如下:
+
+![消息格式](images/lv.png)
+
+head(消息头)由4个字节组成，前三个字节为长度字段，小端序，假设其采用的是无符号数(没有理由使用有符号数)，那么可以表示的最大消息体长度为16MB，其实在驱动内部将消息体的最大长度限制在1MB，如果超过此值那么将会抛出异常。S表示一字节的包序列号。
+
+消息内容以一个人为追加的空字符(0)作为结尾，事实上在驱动内部读取字符串类型时均以遇到字节0作为此次读取的结束。P表示消息版本号，V表示服务器的版本，字符串类型，示例: "5.5.6"；ID表示此次连接的ID。
+
+### 认证: 可插拔
+
+这里的认证指的便是客户端(驱动)向服务器发送用户名、密码完成登录的过程，Mysql自5.5.7版本(这里使用的是5.7.18)开始引入了可插拔登录的概念，主要目的有两点:
+
+- 引入扩展登录方式支持，比如利用Windows ID、Kerberos进行认证。传统的认证方式是**查询Mysql的mysql.user表**。
+- 支持"代理"用户。
+
+具体可以参考Mysql官方文档: [6.3.6 Pluggable Authentication](https://dev.mysql.com/doc/refman/5.5/en/pluggable-authentication.html)
+
+反映到代码层次上就是驱动将密码的转换抽象为插件的形式，密码的转换以默认的插件进行说明: 假定我们的密码为"1234"，Mysql中实际存储的必定不是简单的字符串1234，而是经过摘要/加密得到的串，那么这个过程便称为"转换"。"插件"的类图如下:
+
+![认证插件](images/AuthenticationPlugin.jpg)
 
