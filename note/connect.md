@@ -701,3 +701,16 @@ head(消息头)由4个字节组成，前三个字节为长度字段，小端序�
 
 ![认证插件](images/AuthenticationPlugin.jpg)
 
+AuthenticationPlugin的每一个实现类都是Mysql**内建支持**的认证插件，我们可以通过参数defaultAuthenticationPlugin指定使用的插件，默认为MysqlNativePasswordPlugin，关于此插件的说明可以参考官方文档:
+
+[6.5.1.1 Native Pluggable Authentication](https://dev.mysql.com/doc/refman/5.5/en/native-pluggable-authentication.html)
+
+其对明文密码进行处理的核心逻辑位于方法nextAuthenticationStep:
+
+```java
+bresp = new Buffer(Security.scramble411(pwd, fromServer.readString(), this.connection.getPasswordCharacterEncoding()));
+```
+
+驱动中加载插件、利用插件进行认证的入口位于MysqlIO的proceedHandshakeWithPluggableAuthentication方法。
+
+从上面的内容也可以看出，Mysql进行认证时通过网络进行传输的并不是明文，如果是，那就丢人了。
