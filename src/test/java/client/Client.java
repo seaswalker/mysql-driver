@@ -18,13 +18,15 @@ public class Client {
     @Before
     public void init() throws ClassNotFoundException, SQLException {
         Class.forName("com.mysql.jdbc.Driver");
-        connection = DriverManager.getConnection("jdbc:mysql://localhost:3306/test?cachePrepStmts=true&useServerPrepStmts=true", "root", "1234");
+        connection = DriverManager.getConnection("jdbc:mysql://localhost:3306/test?cachePrepStmts=true&useServerPrepStmts=false", "root", "1234");
     }
 
     @Test
     public void query() throws SQLException {
-        final String sql = "select * from student";
+        final String sql = "select * from student where name = ? and age = ?";
         PreparedStatement ps = connection.prepareStatement(sql);
+        ps.setString(1, "skywalker");
+        ps.setInt(2, 22);
         ResultSet rs = ps.executeQuery();
         while (rs.next()) {
             System.out.println("User: " + rs.getString("name") + ".");
