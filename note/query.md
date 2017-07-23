@@ -185,3 +185,165 @@ protected Buffer fillSendPacket() throws SQLException {
 }
 ```
 
+所谓的Packet其实就是向数据库服务发送的一个byte数组，所以这里我们重点关注一下驱动是如何组织消息格式的。
+
+### 缓冲区
+
+Packet的载体获取方式如下:
+
+```java
+Buffer sendPacket = this.connection.getIO().getSharedSendPacket();
+```
+
+Buffer是驱动自己实现的、基于byte数组的一个简单缓冲区，可以看出，**一个连接的所有查询操作(也可能含其它操作)公用一个缓冲区**，线程安全性由连接唯一的锁保证。
+
+### 格式
+
+对于查询来说，格式如下:
+
+![查询格式](images/query_packet_pattern.PNG)
+
+query是一个单字节的指示位，定义如下:
+
+```java
+static final int QUERY = 3;
+```
+
+驱动允许我们为连接的所有statement指定一个通用/全局的注释，我们可以通过com.mysql.jdbc.Connection的setStatementComment方法进行设置，注意我们设置的应该仅仅包含注释，驱动会自动为我们用`/*`和`*/`(共6个字符，包括两个空格)包围。
+
+static sql和argument便印证了之前对预编译和参数设置行为的猜测。这部分源码如下:
+
+```java
+for (int i = 0; i < batchedParameterStrings.length; i++) {
+    sendPacket.writeBytesNoNull(this.staticSqlStrings[i]);
+    if (batchedIsStream[i]) {
+        streamToBytes(sendPacket, batchedParameterStreams[i], true, batchedStreamLengths[i], useStreamLengths);
+    } else {
+        sendPacket.writeBytesNoNull(batchedParameterStrings[i]);
+    }
+}
+sendPacket.writeBytesNoNull(this.staticSqlStrings[batchedParameterStrings.length]);
+```
+
+batchedParameterStrings便是parameterValues二维数组。
+
+注意，这里有一个细节:
+
+**驱动并未将参数的类型信息发送给数据库服务**,这一点可以从parameterTypes的定义上可以得到印证:
+
+```java
+ /**
+  * Only used by statement interceptors at the moment to
+  * provide introspection of bound values
+  */
+protected int[] parameterTypes = null;
+```
+
+那么数据库服务如何得知类型信息呢?猜测:
+
+服务端会对SQL进行语法分析，必然可以结合表定义得到每个字段的类型信息，然后Mysql会对参数byte数组进行转换，转换失败也就报错了。
+
+## 交互
+
+与数据库服务交互的核心逻辑位于MysqlIO的sqlQueryDirect方法，简略版源码:
+
+```java
+final ResultSetInternalMethods sqlQueryDirect(StatementImpl callingStatement, String query, 
+    String characterEncoding, Buffer queryPacket, int maxRows,
+    int resultSetType, int resultSetConcurrency, boolean streamResults, String catalog, Field[] cachedMetadata) {
+    
+    //前置拦截方法调用
+    if (this.statementInterceptors != null) {
+        ResultSetInternalMethods interceptedResults = invokeStatementInterceptorsPre(query, callingStatement, false);
+        //拦截器返回结果不为null，不进行实际的查询
+        if (interceptedResults != null) {
+            return interceptedResults;
+        }
+    }
+    Buffer resultPacket = sendCommand(MysqlDefs.QUERY, null, queryPacket, false, null, 0);
+    ResultSetInternalMethods rs = readAllResults(callingStatement, maxRows, resultSetType, resultSetConcurrency, 
+        streamResults, catalog, resultPacket, false, -1L, cachedMetadata);
+  
+    //拦截器后置方法调用
+    if (this.statementInterceptors != null) {
+        ResultSetInternalMethods interceptedResults = invokeStatementInterceptorsPost(query, callingStatement, rs, false, null);
+        if (interceptedResults != null) {
+            rs = interceptedResults;
+        }
+    }
+    return rs;
+}
+```
+
+### 结果集读取
+
+核心逻辑位于MysqlIO的readResultsForQueryOrUpdate方法，简略版源码:
+
+```java
+protected final ResultSetImpl readResultsForQueryOrUpdate(StatementImpl callingStatement, 
+        int maxRows, int resultSetType, int resultSetConcurrency,
+        boolean streamResults, String catalog, Buffer resultPacket, boolean isBinaryEncoded, 
+        long preSentColumnCount, Field[] metadataFromCache) {
+    //栏位数
+    long columnCount = resultPacket.readFieldLength();
+    if (columnCount == 0) {
+        return buildResultSetWithUpdates(callingStatement, resultPacket);
+    } else if (columnCount == Buffer.NULL_LENGTH) {
+        //...
+    } else {
+        com.mysql.jdbc.ResultSetImpl results = getResultSet(callingStatement, columnCount, 
+            maxRows, resultSetType, resultSetConcurrency, streamResults, catalog, isBinaryEncoded, metadataFromCache);
+        return results;
+    }
+}
+```
+
+#### 栏位数/字段长度
+
+readFieldLength方法用于读取返回一个字段的长度:
+
+```java
+final long readFieldLength() {
+    int sw = this.byteBuffer[this.position++] & 0xff;
+    switch (sw) {
+        case 251:
+            return NULL_LENGTH;
+        case 252:
+            return readInt();
+        case 253:
+            return readLongInt();
+        case 254:
+            return readLongLong();
+        default:
+            return sw;
+    }
+}
+```
+
+这里使用了一个小小的优化策略: 采用不定长的字节数存储，当数值较小时，一个字节就够了，这样可以降低网络带宽的占用。对于我们测试用的student表，有id、name和age三个字段，所以返回3.
+
+#### 格式
+
+包含栏位数，最终返回的byte数组的格式大致如下:
+
+![结果格式](images/query_result_pattern.PNG)
+
+**栏位值的个数应该是栏位信息数的整数倍**，两者的比值应该就是结果集的行数，这里只是猜测，没有经过源码上的验证。
+
+其中栏位信息又包括多个字段(栏位的描述信息，个数是是固定的)，每个字段的格式如下:
+
+![字段格式](images/query_result_field_pattern.PNG)
+
+主要字段及其意义如下:
+
+1. catalogName
+2. databaseName
+3. tableName
+4. name
+5. colLength
+6. colType
+7. colFlag
+8. colDecimals
+
+分别表示数据库名、表明、字段名，字段类型等信息。
+
