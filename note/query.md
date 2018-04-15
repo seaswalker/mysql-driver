@@ -347,3 +347,55 @@ final long readFieldLength() {
 
 分别表示数据库名、表明、字段名，字段类型等信息。
 
+# 超时
+
+这部分是受《亿级流量》一书的启发，即：**MySQL会为每一个连接创建一个Timer线程用于SQL执行超时控制**。下面来从源码的角度进行证实。
+
+关键点位于PreparedStatement的executeInternal方法，相关源码如下:
+
+```java
+protected ResultSetInternalMethods executeInternal(...) {
+    if (locallyScopedConnection.getEnableQueryTimeouts() 
+        && this.timeoutInMillis != 0 
+        && locallyScopedConnection.versionMeetsMinimum(5, 0, 0)
+    ) {
+		timeoutTask = new CancelTask(this);
+        locallyScopedConnection
+            .getCancelTimer().schedule(timeoutTask, this.timeoutInMillis);
+    }
+}
+```
+
+可以看出，启用超时检测的前提条件是我们开启了查询超时机制并且超时时间不为零。查询超时机制是默认启用的，超时时间需要我们手动去设置。
+
+locallyScopedConnection其实就是当前的数据库连接，下面看一下getCancelTimer方法实现:
+
+```java
+public Timer getCancelTimer() {
+    synchronized (getConnectionMutex()) {
+        if (this.cancelTimer == null) {
+            this.cancelTimer = new Timer(true);
+        }
+        return this.cancelTimer;
+    }
+}
+```
+
+从这里可以看出，如果我们的数据库连接池设置的最大连接数过大，在极限的情况下，连接池将会至少占用
+
+连接数 * 1MB的内存，记住这一点。
+
+## 两种超时
+
+还有一个有意思的问题，MySQL的queryTimeout和socketTimeout究竟有什么区别？
+
+参考这篇美团的文章：
+
+[深入分析JDBC超时机制](https://blog.csdn.net/a837199685/article/details/75796891)
+
+简而言之，最好这两个超时都设置一下，**并且queryTimeout应比socketTimeout要小**。
+
+
+
+
+
